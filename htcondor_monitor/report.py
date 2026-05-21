@@ -18,8 +18,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich import box
 
-from htcondor_monitor.config.settings import settings
-from htcondor_monitor.state.store import RunRecord
+from .settings import settings
+from .store import RunRecord
 
 logger = logging.getLogger(__name__)
 console = Console()

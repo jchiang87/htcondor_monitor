@@ -29,11 +29,11 @@ from pathlib import Path
 import click
 from rich.console import Console
 
-from htcondor_monitor.agents.monitoring_agent import MonitoringAgent
-from htcondor_monitor.config.settings import settings
-from htcondor_monitor.prompts.builder import PromptBuilder
-from htcondor_monitor.reporting.report import print_report, save_json_report, send_email_report
-from htcondor_monitor.state.store import StateStore
+from .monitoring_agent import MonitoringAgent
+from .settings import settings
+from .builder import PromptBuilder
+from .report import print_report, save_json_report, send_email_report
+from .store import StateStore
 
 console = Console()
 

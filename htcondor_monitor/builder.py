@@ -18,8 +18,8 @@ from textwrap import dedent
 
 from jinja2 import Environment, BaseLoader
 
-from htcondor_monitor.config.settings import settings
-from htcondor_monitor.state.store import StateStore
+from .settings import settings
+from .state.store import StateStore
 
 
 # ── Raw prompt templates ───────────────────────────────────────────────────────

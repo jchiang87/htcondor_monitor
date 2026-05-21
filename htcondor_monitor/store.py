@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from htcondor_monitor.config.settings import settings
+from .settings import settings
 
 logger = logging.getLogger(__name__)
 

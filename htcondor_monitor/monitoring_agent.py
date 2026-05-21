@@ -17,10 +17,10 @@ from typing import Any
 
 from smolagents import CodeAgent, AnthropicModel
 
-from htcondor_monitor.config.settings import settings
-from htcondor_monitor.prompts.builder import PromptBuilder
-from htcondor_monitor.state.store import StateStore, RunRecord
-from htcondor_monitor.tools.opensearch_tools import ALL_TOOLS
+from .settings import settings
+from .builder import PromptBuilder
+from .store import StateStore, RunRecord
+from .opensearch_tools import ALL_TOOLS
 
 logger = logging.getLogger(__name__)
 

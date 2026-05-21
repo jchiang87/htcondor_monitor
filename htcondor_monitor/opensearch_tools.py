@@ -16,7 +16,7 @@ from typing import Any
 from smolagents import tool
 from opensearchpy import OpenSearch, RequestsHttpConnection
 
-from htcondor_monitor.config.settings import settings
+from .settings import settings
 
 logger = logging.getLogger(__name__)
 
