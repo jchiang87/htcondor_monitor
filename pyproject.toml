@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "htcondor-monitor"
+dynamic = ["version"]
+description = "Agentic HTCondor cluster monitoring via Claude and OpenSearch"
+license = { text = "BSD-3-Clause" }
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic",
+    "click>=8",
+    "jinja2>=3",
+    "opensearch-py>=2",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    "rich>=13",
+    "smolagents",
+]
+
+[project.scripts]
+htcondor-monitor = "htcondor_monitor.run:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["htcondor_monitor*"]
+
+[tool.setuptools_scm]
+write_to = "htcondor_monitor/_version.py"
+version_scheme = "post-release"
+local_scheme = "dirty-tag"
