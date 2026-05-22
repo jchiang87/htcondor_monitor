@@ -3,8 +3,8 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from htcondor_monitor.agents.monitoring_agent import MonitoringAgent
-from htcondor_monitor.reporting.report import print_report, save_json_report, send_email_report
+from htcondor_monitor.monitoring_agent import MonitoringAgent
+from htcondor_monitor.report import print_report, save_json_report, send_email_report
 
 def main():
     agent = MonitoringAgent()

@@ -15,7 +15,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from smolagents import CodeAgent, AnthropicModel
+from smolagents import CodeAgent, OpenAIModel
 
 from .settings import settings
 from .builder import PromptBuilder
@@ -46,14 +46,14 @@ class MonitoringAgent:
         self._builder = prompt_builder or PromptBuilder(self._store)
         self._extra_tools = extra_tools or []
 
-    def _build_llm(self) -> AnthropicModel:
+    def _build_llm(self) -> OpenAIModel:
         api_key = settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             raise RuntimeError(
                 "No Anthropic API key found.  Set HTCONDOR_ANTHROPIC_API_KEY "
                 "or ANTHROPIC_API_KEY environment variable."
             )
-        return AnthropicModel(
+        return OpenAIModel(
             model_id=settings.anthropic_model,
             api_key=api_key,
         )

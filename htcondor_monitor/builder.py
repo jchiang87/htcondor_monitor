@@ -19,7 +19,7 @@ from textwrap import dedent
 from jinja2 import Environment, BaseLoader
 
 from .settings import settings
-from .state.store import StateStore
+from .store import StateStore
 
 
 # ── Raw prompt templates ───────────────────────────────────────────────────────
