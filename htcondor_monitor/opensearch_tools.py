@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from smolagents import tool
-from opensearchpy import OpenSearch, RequestsHttpConnection
+from opensearchpy import OpenSearch
 
 from .settings import settings
 
@@ -26,11 +26,13 @@ logger = logging.getLogger(__name__)
 def _get_client() -> OpenSearch:
     """Return a configured OpenSearch client (created fresh per call — stateless)."""
     kwargs: dict[str, Any] = {
-        "hosts": [settings.opensearch_host],
-        "connection_class": RequestsHttpConnection,
+        "hosts": [{'host': settings.opensearch_host, 'port': settings.opensearch_port}],
+        "http_compress": True,
         "timeout": settings.opensearch_timeout,
-        "use_ssl": settings.opensearch_host.startswith("https"),
-        "verify_certs": settings.opensearch_ca_cert is not None,
+        "use_ssl": True,
+        "verify_certs": True,
+        "ssl_assert_hostname": False,
+        "ssl_show_warn": False,
     }
     if settings.opensearch_ca_cert:
         kwargs["ca_certs"] = settings.opensearch_ca_cert
@@ -40,7 +42,7 @@ def _get_client() -> OpenSearch:
 
 
 def _index_pattern() -> str:
-    return f"{settings.opensearch_index_prefix}-*"
+    return f"{settings.opensearch_index_prefix}*"
 
 
 def _epoch_range(hours_back: int) -> tuple[int, int]:
@@ -48,11 +50,17 @@ def _epoch_range(hours_back: int) -> tuple[int, int]:
     return now - hours_back * 3600, now
 
 
+def _kw(field: str) -> str:
+    """Append .keyword suffix if the index mapping requires it."""
+    return f"{field}.keyword" if settings.opensearch_use_keyword_suffix else field
+
+
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 @tool
 def query_jobs(
     hours_back: int = 24,
+    time_field: str | None = None,
     job_status: list[int] | None = None,
     user: str | None = None,
     size: int = 500,
@@ -62,7 +70,15 @@ def query_jobs(
     Query HTCondor job ClassAds from OpenSearch.
 
     Args:
-        hours_back: How many hours back to search (based on CompletionDate or QDate).
+        hours_back: How many hours back to search.
+        time_field: The ClassAd field to use for the time window filter.
+                    Common choices:
+                      - QDate (default) — job submission time
+                      - CompletionDate  — when the job finished
+                      - RecordTime      — when the record was written
+                                          to OpenSearch
+                    If None, defaults to the configured field_submit_time
+                    (QDate).
         job_status: List of HTCondor JobStatus codes to filter on.
                     4=Completed, 5=Held, 3=Removed, 1=Idle, 2=Running.
                     None means all statuses.
@@ -72,17 +88,20 @@ def query_jobs(
 
     Returns:
         List of job ClassAd dicts.
+        Note that this is a python list, not dict.
     """
     client = _get_client()
+    field = time_field or settings.field_submit_time
     start_epoch, end_epoch = _epoch_range(hours_back)
 
     must: list[dict] = [
-        {"range": {settings.field_submit_time: {"gte": start_epoch, "lte": end_epoch}}}
+        {"range": {field: {"gte": start_epoch, "lte": end_epoch}}}
     ]
     if job_status:
         must.append({"terms": {settings.field_job_status: job_status}})
     if user:
-        must.append({"term": {f"{settings.field_user}.keyword": user}})
+#        must.append({"term": {f"{settings.field_user}.keyword": user}})
+        must.append({"term": {_kw(settings.field_user): user}})
     if extra_filters:
         must.extend(extra_filters)
 
@@ -98,6 +117,7 @@ def query_jobs(
 @tool
 def aggregate_by_user(
     hours_back: int = 24,
+    time_field: str | None = None,
     metric_fields: list[str] | None = None,
 ) -> list[dict]:
     """
@@ -108,12 +128,21 @@ def aggregate_by_user(
 
     Args:
         hours_back: Lookback window in hours.
+        time_field: The ClassAd field to use for the time window filter.
+                    Common choices:
+                      - QDate (default) — job submission time
+                      - CompletionDate  — when the job finished
+                      - RecordTime      — when the record was written
+                                          to OpenSearch
+                    If None, defaults to the configured field_submit_time
+                    (QDate).
         metric_fields: Additional numeric fields to average (optional).
 
     Returns:
         List of dicts, one per user, with aggregated stats.
     """
     client = _get_client()
+    field = time_field or settings.field_submit_time
     start_epoch, _ = _epoch_range(hours_back)
 
     F = settings  # shorthand
@@ -138,11 +167,12 @@ def aggregate_by_user(
     body = {
         "size": 0,
         "query": {
-            "range": {F.field_submit_time: {"gte": start_epoch}}
+            "range": {field: {"gte": start_epoch}}
         },
         "aggs": {
             "by_user": {
-                "terms": {"field": f"{F.field_user}.keyword", "size": 200},
+#                "terms": {"field": f"{F.field_user}.keyword", "size": 200},
+                "terms": {"field": _kw(F.field_user), "size": 200},
                 "aggs": aggs,
             }
         },
@@ -164,26 +194,39 @@ def aggregate_by_user(
 
 
 @tool
-def aggregate_by_node(hours_back: int = 168) -> list[dict]:
+def aggregate_by_node(
+    hours_back: int = 168,
+    time_field: str | None = None,
+) -> list[dict]:
     """
     Return per-execute-node failure and eviction statistics.
 
     Args:
         hours_back: Lookback window in hours (default 7 days).
+        time_field: The ClassAd field to use for the time window filter.
+                    Common choices:
+                      - QDate (default) — job submission time
+                      - CompletionDate  — when the job finished
+                      - RecordTime      — when the record was written
+                                          to OpenSearch
+                    If None, defaults to the configured field_submit_time
+                    (QDate).
 
     Returns:
         List of dicts with node name, total jobs, failure count, failure rate.
     """
     client = _get_client()
+    field = time_field or settings.field_submit_time
     start_epoch, _ = _epoch_range(hours_back)
     F = settings
 
     body = {
         "size": 0,
-        "query": {"range": {F.field_submit_time: {"gte": start_epoch}}},
+        "query": {"range": {field: {"gte": start_epoch}}},
         "aggs": {
             "by_node": {
-                "terms": {"field": f"{F.field_last_remote_host}.keyword", "size": 500},
+#                "terms": {"field": f"{F.field_last_remote_host}.keyword", "size": 500},
+                "terms": {"field": _kw(F.field_last_remote_host), "size": 500},
                 "aggs": {
                     "failed": {
                         "filter": {
@@ -239,9 +282,11 @@ def get_hold_reason_summary(hours_back: int = 24) -> list[dict]:
         },
         "aggs": {
             "by_reason": {
-                "terms": {"field": f"{F.field_hold_reason}.keyword", "size": 50},
+#                "terms": {"field": f"{F.field_hold_reason}.keyword", "size": 50},
+                "terms": {"field": _kw(F.field_hold_reason), "size": 50},
                 "aggs": {
-                    "users": {"terms": {"field": f"{F.field_user}.keyword", "size": 20}}
+#                    "users": {"terms": {"field": f"{F.field_user}.keyword", "size": 20}}
+                    "users": {"terms": {"field": _kw(F.field_user), "size": 20}}
                 },
             }
         },
@@ -260,19 +305,25 @@ def get_hold_reason_summary(hours_back: int = 24) -> list[dict]:
 @tool
 def get_schema_sample(num_docs: int = 3) -> list[dict]:
     """
-    Return a small sample of raw ClassAd documents from OpenSearch.
+    Return a small sample of recent ClassAd documents from OpenSearch.
+    Documents are sorted by submission time descending so the sample
+    reflects current data, not whatever happens to be first in the index.
     Useful for the agent to discover available field names before querying.
 
     Args:
         num_docs: Number of sample documents to return (max 10).
 
     Returns:
-        List of raw ClassAd dicts.
+        List of raw ClassAd dicts, most recent first.
     """
     client = _get_client()
     resp = client.search(
         index=_index_pattern(),
-        body={"size": min(num_docs, 10), "query": {"match_all": {}}},
+        body={
+            "size": min(num_docs, 10),
+            "query": {"match_all": {}},
+            "sort": [{settings.field_submit_time: {"order": "desc"}}],
+        },
     )
     return [hit["_source"] for hit in resp["hits"]["hits"]]
 
@@ -306,6 +357,12 @@ def run_raw_query(query_body: str) -> dict:
 
     Returns:
         The raw OpenSearch response dict (hits + aggregations if any).
+        This is a dict with three keys:
+          - "total" (int): total number of matching documents
+          - "hits" (list): list of _source dicts for each matching document
+          - "aggregations" (dict): aggregation results if any, else {}
+        Access results as: result["total"], result["hits"], result["aggregations"]
+        Do NOT attempt result["hits"]["total"] — "hits" is a plain list, not a dict.
     """
     client = _get_client()
     body = json.loads(query_body)
