@@ -26,6 +26,13 @@ htcondor-monitor = "htcondor_monitor.run:cli"
 where = ["."]
 include = ["htcondor_monitor*"]
 
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::UserWarning"]
+
 [tool.setuptools_scm]
 write_to = "htcondor_monitor/_version.py"
 version_scheme = "post-release"
