@@ -1,26 +1,28 @@
 """
-MonitoringAgent — thin wrapper around smolagents.CodeAgent that wires together:
-  - OpenSearch tools
-  - PromptBuilder (templated prompts + prior context)
-  - StateStore (persistence of findings)
-  - Structured JSON output extraction
+MonitoringAgent — wires together orchestrator → prompt → CodeAgent → state.
+
+Flow:
+  1. Orchestrator runs deterministic queries + metrics (OpenSearch, pure Python)
+  2. PromptBuilder renders a hybrid prompt with pre-computed findings injected
+  3. CodeAgent synthesises a narrative report and classifies new/ongoing/resolved
+  4. StateStore persists the findings for continuity in the next run
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import re
 from datetime import datetime, timezone
 from typing import Any
 
 from smolagents import CodeAgent, OpenAIModel
+from smolagents.agents import AgentMaxStepsError
 
 from .settings import settings
 from .builder import PromptBuilder
 from .store import StateStore, RunRecord
-from .opensearch_tools import ALL_TOOLS
+from .tools.opensearch_tools import ALL_TOOLS
+from .orchestrators import run_orchestrator, ORCHESTRATORS
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +34,8 @@ class MonitoringAgent:
     Typical usage::
 
         agent = MonitoringAgent()
-        result = agent.run("health_check")
-        print(result.findings_json["executive_summary"])
+        record = agent.run("health_check")
+        print(record.findings_json["executive_summary"])
     """
 
     def __init__(
@@ -75,49 +77,69 @@ class MonitoringAgent:
         )
 
     @staticmethod
-    def _extract_json(raw_output: str) -> dict[str, Any]:
+    def _extract_findings(raw_output: Any) -> dict[str, Any]:
         """
-        Pull the first JSON object out of the agent's raw text output.
-        The agent is instructed to return JSON but may wrap it in prose or
-        markdown fences.
+        Normalise agent output to a findings dict.
+        smolagents may return a dict directly if the model output was valid JSON.
         """
         if isinstance(raw_output, dict):
-            # No parsing as dict needed, so just return the model output directly.
             return raw_output
+        if not isinstance(raw_output, str):
+            logger.warning("Unexpected agent output type %s", type(raw_output))
+            raw_output = str(raw_output)
+        # Plain text fallback — store as executive summary
+        return {"executive_summary": raw_output, "_parse_error": True}
 
-        # Try to find a JSON block inside ```json ... ``` fences
-        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_output, re.DOTALL)
-        if fence_match:
-            candidate = fence_match.group(1)
-        else:
-            # Find the outermost { ... } span
-            start = raw_output.find("{")
-            end = raw_output.rfind("}")
-            if start == -1 or end == -1:
-                logger.warning("No JSON object found in agent output; returning empty dict")
-                return {"executive_summary": raw_output, "_parse_error": True}
-            candidate = raw_output[start : end + 1]
+    @staticmethod
+    def _normalise_findings(fj: dict[str, Any]) -> dict[str, Any]:
+        """
+        Coerce known fields to their expected types in one place so that
+        reporting and state code don't need per-field isinstance checks.
+        """
+        def _to_str(v: Any) -> str:
+            if isinstance(v, dict):
+                return v.get("user") or v.get("node") or v.get("name") or str(v)
+            return str(v)
 
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError as exc:
-            logger.warning("JSON parse failed (%s); returning raw summary", exc)
-            return {"executive_summary": raw_output, "_parse_error": True}
+        for key in ("flagged_users", "flagged_nodes"):
+            if key in fj and isinstance(fj[key], list):
+                fj[key] = [_to_str(v) for v in fj[key]]
+
+        for key in ("new_issues", "ongoing_issues", "resolved_issues"):
+            if key in fj and isinstance(fj[key], list):
+                fj[key] = [str(v) if not isinstance(v, str) else v for v in fj[key]]
+
+        return fj
+
+    def _recover_partial_output(self, agent: CodeAgent) -> dict[str, Any]:
+        """Extract whatever the agent produced before hitting max_steps."""
+        parts = []
+        for step in getattr(agent, "logs", []):
+            obs = getattr(step, "observations", None)
+            if obs:
+                parts.append(str(obs))
+        text = "\n".join(parts) if parts else "Agent reached max_steps with no recoverable output."
+        return {
+            "executive_summary": f"[INCOMPLETE — hit max_steps limit] {text[:500]}",
+            "_max_steps_reached": True,
+        }
 
     def run(
         self,
         task_name: str,
         cadence: str | None = None,
         dry_run: bool = False,
+        hours_back: int | None = None,
         extra_prompt_vars: dict | None = None,
     ) -> RunRecord:
         """
         Execute a monitoring task and persist the result.
 
         Args:
-            task_name: Name of the prompt template / task to run.
+            task_name: Name of the task to run.
             cadence: Override global cadence setting.
-            dry_run: If True, print the rendered prompt but do not call the LLM.
+            dry_run: Print rendered prompt without calling LLM or OpenSearch.
+            hours_back: Override the default lookback window for this task.
             extra_prompt_vars: Extra Jinja2 variables forwarded to the prompt builder.
 
         Returns:
@@ -126,8 +148,21 @@ class MonitoringAgent:
         cadence = cadence or settings.cadence
         run_at = datetime.now(timezone.utc)
 
+        # ── Step 1: pre-compute findings via orchestrator ──────────────────
+        if dry_run:
+            findings: dict[str, Any] = {"_dry_run": True}
+        else:
+            logger.info("Running orchestrator for task=%s", task_name)
+            try:
+                findings = run_orchestrator(task_name, hours_back=hours_back)
+            except Exception as exc:
+                logger.error("Orchestrator failed for task=%s: %s", task_name, exc)
+                raise
+
+        # ── Step 2: render prompt with findings injected ───────────────────
         prompt = self._builder.build(
             task_name=task_name,
+            findings=findings,
             cadence=cadence,
             extra_vars=extra_prompt_vars,
         )
@@ -146,15 +181,24 @@ class MonitoringAgent:
                 findings_json={},
             )
 
-        logger.info("Starting agent task=%s cadence=%s", task_name, cadence)
+        # ── Step 3: call the agent for synthesis ───────────────────────────
+        logger.info("Starting agent synthesis for task=%s cadence=%s", task_name, cadence)
         agent = self._build_agent()
 
-        raw_output: str = agent.run(prompt)
+        try:
+            raw_output = agent.run(prompt)
+        except AgentMaxStepsError:
+            logger.warning(
+                "Agent hit max_steps (%d) for task=%s — capturing partial output",
+                settings.agent_max_steps, task_name,
+            )
+            raw_output = self._recover_partial_output(agent)
 
-        findings_json = self._extract_json(raw_output)
+        # ── Step 4: normalise and persist ──────────────────────────────────
+        findings_json = self._normalise_findings(self._extract_findings(raw_output))
         summary = findings_json.get(
             "executive_summary",
-            raw_output[:500] if isinstance(raw_output, str) else str(raw_output)[:500],
+            str(raw_output)[:500],
         )
 
         record = RunRecord(
@@ -166,5 +210,5 @@ class MonitoringAgent:
             agent_steps=getattr(agent, "step_number", 0),
         )
         self._store.save(record)
-        logger.info("Task %s complete.  Summary: %s", task_name, summary[:120])
+        logger.info("Task %s complete. Summary: %s", task_name, summary[:120])
         return record
