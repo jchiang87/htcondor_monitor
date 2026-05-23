@@ -21,7 +21,7 @@ from smolagents.agents import AgentMaxStepsError
 from .settings import settings
 from .builder import PromptBuilder
 from .store import StateStore, RunRecord
-from .opensearch_tools import ALL_TOOLS
+from .tools.opensearch_tools import ALL_TOOLS
 from .orchestrators import run_orchestrator, ORCHESTRATORS
 
 logger = logging.getLogger(__name__)

@@ -15,15 +15,50 @@ narrative synthesis, cross-signal reasoning, and new/ongoing/resolved classifica
 from __future__ import annotations
 
 import logging
+import json
+import random
 from typing import Any
 
-from htcondor_monitor.config.settings import settings
-from htcondor_monitor.tools import opensearch_queries as q
-from htcondor_monitor.tools import metrics as m
+from .settings import settings
+from .tools import opensearch_queries as q
+from .tools import metrics as m
 
 logger = logging.getLogger(__name__)
 
 FindingsContext = dict[str, Any]
+
+
+class ContextTooLargeError(RuntimeError):
+    """Raised when pre-computed findings would exceed the configured token budget."""
+    def __init__(self, task_name: str, estimated_tokens: int, limit: int):
+        self.task_name = task_name
+        self.estimated_tokens = estimated_tokens
+        self.limit = limit
+        super().__init__(
+            f"Task '{task_name}' findings estimated at ~{estimated_tokens} tokens "
+            f"which exceeds the limit of {limit}. "
+            f"Increase HTCONDOR_MAX_FINDINGS_TOKENS or reduce the lookback window. "
+            f"Aborting before LLM call."
+        )
+
+
+def _check_context_size(task_name: str, findings: FindingsContext) -> None:
+    """
+    Estimate the token count of the findings dict and raise ContextTooLargeError
+    if it exceeds the configured limit.
+
+    Uses the rough heuristic of len(json_bytes) / 4, which is a reliable
+    conservative estimate for mixed English/numeric JSON.
+    """
+    serialised = json.dumps(findings, default=str)
+    estimated_tokens = len(serialised) // 4
+    limit = settings.max_findings_tokens
+    if estimated_tokens > limit:
+        raise ContextTooLargeError(task_name, estimated_tokens, limit)
+    logger.debug(
+        "Context size check passed for task=%s: ~%d tokens (limit %d)",
+        task_name, estimated_tokens, limit,
+    )
 
 
 # ── Health check ───────────────────────────────────────────────────────────────
@@ -223,6 +258,179 @@ def run_gpu_utilization(hours_back: int = 168) -> FindingsContext:
 
 # ── Long-running jobs ──────────────────────────────────────────────────────────
 
+_LONG_JOB_FIELDS = (
+    settings.field_cluster_id,
+    settings.field_proc_id,
+    settings.field_user,
+    settings.field_wall_time,
+    settings.field_cpu_user,
+    settings.field_cpu_sys,
+    settings.field_num_job_starts,
+    settings.field_memory_usage,
+    settings.field_memory_request,
+    settings.field_exit_code,
+    "RequestWalltime",
+    "OnExitRemove",
+    "CheckpointedAt",
+)
+
+
+def _slim_job(job: dict) -> dict:
+    """Return only the fields the agent needs for classification."""
+    return {k: job[k] for k in _LONG_JOB_FIELDS if k in job}
+
+
+
+def classify_long_running_jobs(jobs: list[dict]) -> dict[str, list]:
+    """
+    Pre-classify long-running jobs into buckets so the agent only needs
+    to review edge cases rather than every job.
+
+    Classification priority (first match wins):
+      leaking_memory  — memory usage growing, above request, or RSS anomalously high
+      terminated      — non-zero exit code or signal termination
+      eviction_issues — excessive restarts without forward progress
+      stalled         — very low CPU efficiency with no checkpointing
+      good_use        — healthy CPU efficiency
+      needs_review    — everything else
+
+    Returns a dict with one list per classification bucket.
+    Each job dict is slimmed to relevant fields and annotated with
+    _cpu_eff_pct, _checkpointing, _evictions, and _classification_reason.
+    """
+    buckets: dict[str, list] = {
+        "leaking_memory":  [],
+        "terminated":      [],
+        "eviction_issues": [],
+        "stalled":         [],
+        "good_use":        [],
+        "needs_review":    [],
+    }
+
+    F = settings
+
+    for job in jobs:
+        wall       = job.get(F.field_wall_time)      or 0
+        cpu        = job.get(F.field_cpu_user)        or 0
+        rss_kb     = job.get(F.field_memory_usage)    or 0
+        req_mb     = job.get(F.field_memory_request)  or 0
+        num_starts = job.get(F.field_num_job_starts)  or 1
+        exit_code  = job.get(F.field_exit_code)
+        job_status = job.get(F.field_job_status)
+
+        eff = round(100.0 * cpu / wall, 1) if wall > 0 else None
+        checkpointing = bool(job.get("CheckpointedAt") or job.get("OnExitRemove"))
+        # NumJobStarts includes the first start, so evictions = starts - 1
+        evictions = max(0, num_starts - 1)
+
+        slim = _slim_job(job)
+        slim["_cpu_eff_pct"]    = eff
+        slim["_checkpointing"]  = checkpointing
+        slim["_evictions"]      = evictions
+
+        # ── Memory leak / overuse ────────────────────────────────────────
+        # Flag if RSS exceeds request, or if RSS is anomalously high
+        # relative to CPU work done (high RSS + low CPU suggests leak).
+        rss_mb = rss_kb / 1024
+        memory_exceeded = req_mb > 0 and rss_mb > req_mb * (
+            1 + settings.memory_exceeded_pct / 100
+        )
+        # Heuristic: RSS growing relative to CPU progress suggests a leak.
+        # We approximate this as very high RSS combined with very low CPU
+        # efficiency — the job is accumulating memory without doing work.
+        likely_leaking = (
+            rss_mb > 0
+            and eff is not None
+            and eff < 10
+            and rss_mb > req_mb * 0.8   # using most of its allocation
+        )
+        if memory_exceeded or likely_leaking:
+            slim["_classification_reason"] = (
+                f"RSS {rss_mb:.0f}MB exceeds request {req_mb:.0f}MB"
+                if memory_exceeded
+                else f"High RSS {rss_mb:.0f}MB with low CPU efficiency {eff}%"
+            )
+            slim["_memory_exceeded"] = memory_exceeded
+            slim["_likely_leaking"]  = likely_leaking
+            buckets["leaking_memory"].append(slim)
+            continue
+
+        # ── Termination ──────────────────────────────────────────────────
+        # Non-zero exit or signal kill (exit codes > 128 are signal + 128).
+        # Status 4 = completed, so non-zero exit on a completed job is an
+        # application error.  Status 3 = removed (external termination).
+        is_signal_kill = isinstance(exit_code, int) and exit_code > 128
+        is_app_error   = isinstance(exit_code, int) and 0 < exit_code <= 128
+        is_removed     = job_status == 3
+        if is_signal_kill or is_app_error or is_removed:
+            slim["_classification_reason"] = (
+                f"Signal kill (exit {exit_code}, signal {exit_code - 128})"
+                if is_signal_kill
+                else f"Application error (exit code {exit_code})"
+                if is_app_error
+                else "Job was removed externally"
+            )
+            slim["_exit_code"]   = exit_code
+            slim["_is_removed"]  = is_removed
+            buckets["terminated"].append(slim)
+            continue
+
+        # ── Eviction issues ──────────────────────────────────────────────
+        # Flag if evictions are high relative to the job's wall time,
+        # suggesting the job is being preempted repeatedly without making
+        # progress.  Checkpointing mitigates this but repeated evictions
+        # even with checkpointing may indicate a placement problem.
+        eviction_rate = evictions / (wall / 3600) if wall > 0 else 0  # per hour
+        excessive = evictions > settings.eviction_warn_count
+        high_rate  = eviction_rate > 1.0  # more than once per hour
+        if excessive or high_rate:
+            slim["_classification_reason"] = (
+                f"{evictions} evictions "
+                f"({'checkpointing active' if checkpointing else 'no checkpointing'}), "
+                f"rate {eviction_rate:.2f}/hr"
+            )
+            slim["_eviction_rate_per_hr"] = round(eviction_rate, 2)
+            slim["_checkpointing"]        = checkpointing
+            buckets["eviction_issues"].append(slim)
+            continue
+
+        # ── Stalled ──────────────────────────────────────────────────────
+        if eff is not None and eff < 5 and not checkpointing:
+            slim["_classification_reason"] = (
+                f"CPU efficiency {eff}% with no checkpointing"
+            )
+            buckets["stalled"].append(slim)
+            continue
+
+        # ── Good use ─────────────────────────────────────────────────────
+        if eff is not None and eff > 50:
+            slim["_classification_reason"] = f"CPU efficiency {eff}%"
+            buckets["good_use"].append(slim)
+            continue
+
+        # ── Needs review ─────────────────────────────────────────────────
+        slim["_classification_reason"] = (
+            f"CPU efficiency {eff}% — ambiguous"
+            if eff is not None
+            else "Insufficient data for classification"
+        )
+        buckets["needs_review"].append(slim)
+
+    return buckets
+
+
+def _sample(jobs: list[dict], n: int) -> tuple[list[dict], int]:
+    """
+    Return a random sample of at most n jobs and the original total count.
+    The total is returned separately so the agent can report accurately
+    even though it only sees a subset.
+    """
+    total = len(jobs)
+    if total <= n:
+        return jobs, total
+    return random.sample(jobs, n), total
+
+
 def run_long_running_jobs(hours_back: int = 168) -> FindingsContext:
     """
     Identify jobs whose wall time significantly exceeds their requested wall time.
@@ -252,22 +460,32 @@ def run_long_running_jobs(hours_back: int = 168) -> FindingsContext:
         ],
     )
 
-    return {
-        "hours_back":             hours_back,
-        "long_running_count":     len(running),
-        "long_completed_count":   len(completed),
-        "long_running_jobs":      running,
-        "long_completed_jobs":    completed,
+    classified = classify_long_running_jobs(running + completed)
+    result = {
+        "hours_back": hours_back,
+        "total_long_jobs": len(running) + len(completed),
+        "good_use_count": len(classified["good_use"]),
         "thresholds": {
-            "long_job_multiplier":      settings.long_job_multiplier,
-            "long_job_fallback_hours":  settings.long_job_fallback_hours,
+            "long_job_multiplier": settings.long_job_multiplier,
+            "long_job_fallback_hours": settings.long_job_fallback_hours,
         },
         "note": (
-            "Classify each job as GOOD_USE, STALLED, LEAKING_MEMORY, or NEEDS_REVIEW "
-            "based on CPU efficiency, eviction count, and whether checkpointing is active. "
-            "Look for OnExitRemove or CheckpointedAt fields in the job records."
+            "Note: The lists for each of the problem categories -- leaking_memory, "
+            "terminated, eviction_issues, stalled, and needs_review -- may be "
+            "sampled from a larger set. The associated *_total entries give "
+            "the true counts.  Report both the sample findings and the total "
+            "counts in your summary."
         ),
     }
+    # Build sampled buckets to limit context volume.
+    for issue in classified:
+        if issue == "good_use":
+            continue
+        subsample, total_count = _sample(classified[issue], 20)
+        result[issue] = subsample
+        result[f"{issue}_total"] = total_count
+
+    return result
 
 
 # ── Registry ───────────────────────────────────────────────────────────────────
@@ -300,4 +518,6 @@ def run_orchestrator(task_name: str, hours_back: int | None = None) -> FindingsC
             f"Unknown task '{task_name}'.  Available: {list(ORCHESTRATORS.keys())}"
         )
     fn, default_hours = ORCHESTRATORS[task_name]
-    return fn(hours_back=hours_back or default_hours)
+    findings = fn(hours_back=hours_back or default_hours)
+    _check_context_size(task_name, findings)   # raises before returning if too large
+    return findings

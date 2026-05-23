@@ -15,7 +15,7 @@ import logging
 import statistics
 from typing import Any
 
-from htcondor_monitor.config.settings import settings
+from ..settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ def find_memory_overrequested(user_stats: list[dict]) -> list[Finding]:
             row.get("avg_memory_usage_kb"),
             row.get("avg_memory_request"),
         )
-        if ratio is not None and (1.0 / ratio) > settings.memory_overrequest_ratio:
+        if ratio is not None and ratio > 0 and (1.0 / ratio) > settings.memory_overrequest_ratio:
             p90_kb = row.get("avg_memory_usage_kb_p90")
             suggested_mb = round(p90_kb / 1024 * 1.25) if p90_kb else None  # p90 + 25% headroom
             findings.append({
@@ -310,8 +310,11 @@ def find_fleet_outliers(
         flags = []
         if p99_wall and row.get("avg_wall_time", 0) > p99_wall:
             flags.append(f"avg wall time {row['avg_wall_time']:.0f}s > p99 {p99_wall:.0f}s")
-        if p99_memory and row.get("avg_memory_usage_kb", 0) > p99_memory:
-            flags.append(f"avg memory {row['avg_memory_usage_kb']:.0f}KB > p99 {p99_memory:.0f}KB")
+        try:
+            if p99_memory and row.get("avg_memory_usage_kb", 0) > p99_memory:
+                flags.append(f"avg memory {row['avg_memory_usage_kb']:.0f}KB > p99 {p99_memory:.0f}KB")
+        except TypeError:
+            pass
         if p99_starts and row.get("total_job_starts", 0) / max(row["job_count"], 1) > p99_starts:
             flags.append(f"avg job starts per job > p99 fleet baseline")
         if flags:

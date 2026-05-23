@@ -55,10 +55,10 @@ def test_print_prompt_health_check_exit_zero():
     assert result.exit_code == 0, result.output
 
 
-def test_print_prompt_health_check_contains_field_user():
+def test_print_prompt_health_check_contains_analyst_role():
     runner = CliRunner()
     result = runner.invoke(cli, ["print-prompt", "health_check"])
-    assert app_settings.field_user in result.output
+    assert "HTCondor cluster monitoring analyst" in result.output
 
 
 def test_print_prompt_produces_substantial_output():

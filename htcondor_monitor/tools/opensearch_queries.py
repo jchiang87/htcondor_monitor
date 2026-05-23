@@ -16,7 +16,7 @@ from typing import Any
 
 from opensearchpy import OpenSearch, RequestsHttpConnection
 
-from htcondor_monitor.config.settings import settings
+from ..settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +25,13 @@ logger = logging.getLogger(__name__)
 
 def get_client() -> OpenSearch:
     kwargs: dict[str, Any] = {
-        "hosts": [settings.opensearch_host],
-        "connection_class": RequestsHttpConnection,
+        "hosts": [{'host': settings.opensearch_host, 'port': settings.opensearch_port}],
+        "http_compress": True,
         "timeout": settings.opensearch_timeout,
-        "use_ssl": settings.opensearch_host.startswith("https"),
-        "verify_certs": settings.opensearch_ca_cert is not None,
+        "use_ssl": True,
+        "verify_certs": True,
+        "ssl_assert_hostname": False,
+        "ssl_show_warn": False,
     }
     if settings.opensearch_ca_cert:
         kwargs["ca_certs"] = settings.opensearch_ca_cert
@@ -39,7 +41,7 @@ def get_client() -> OpenSearch:
 
 
 def index_pattern() -> str:
-    return f"{settings.opensearch_index_prefix}-*"
+    return f"{settings.opensearch_index_prefix}*"
 
 
 def epoch_range(hours_back: int) -> tuple[int, int]:
@@ -148,7 +150,7 @@ def fetch_user_aggregations(
     if extra_aggs:
         aggs.update(extra_aggs)
 
-    resp = search({
+    body = {
         "size": 0,
         "query": {"range": {field: {"gte": start_epoch}}},
         "aggs": {
@@ -157,8 +159,8 @@ def fetch_user_aggregations(
                 "aggs": aggs,
             }
         },
-    })
-
+    }
+    resp = search(body)
     results = []
     for bucket in resp["aggregations"]["by_user"]["buckets"]:
         row: dict[str, Any] = {

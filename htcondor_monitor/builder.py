@@ -246,7 +246,7 @@ HYBRID_TEMPLATES["long_running_jobs"] = dedent("""\
 You are an HTCondor cluster monitoring analyst.
 
 ## Pre-computed findings — Long-Running Jobs ({{ now }})
-The following job records have wall times exceeding {{ findings.thresholds.long_job_fallback_hours }} hours.
+The following job records have wall times exceeding {{ findings.get('thresholds', {}).get('long_job_fallback_hours', cfg.long_job_fallback_hours) }} hours.
 You do not need to query OpenSearch.
 
 {{ findings_json }}

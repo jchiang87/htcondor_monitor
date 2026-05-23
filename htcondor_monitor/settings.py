@@ -102,6 +102,12 @@ class Settings(BaseSettings):
     agent_max_steps: int = 20
     agent_verbosity: int = 1   # 0=quiet, 1=normal, 2=debug
 
+    # ── Context size control ───────────────────────────────────────────────
+    # Rough token budget for the pre-computed findings JSON injected into the prompt.
+    # len(json_bytes) / 4 is used as the estimate.  A findings dict exceeding this
+    # causes ContextTooLargeError before the LLM is called.
+    max_findings_tokens: int = 8000
+
     # ── Thresholds used in prompts ─────────────────────────────────────────
     cpu_efficiency_warn_pct: float = 30.0
     memory_overrequest_ratio: float = 2.0
