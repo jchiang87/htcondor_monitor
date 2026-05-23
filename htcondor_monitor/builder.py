@@ -76,7 +76,12 @@ Return your findings as a JSON object with this structure:
   "excessive_evictions": [...],
   "unhealthy_nodes": [...],
   "flagged_users": ["<username>", ...],
+  // IMPORTANT:  this must be a flat list of plain strings, not objects.
+  // Example: ["alice", "bob"] NOT [{"user": "alice"}, {"user": "bob"}]
   "flagged_nodes": ["<nodename>", ...],
+  // IMPORTANT:  this must be a flat list of plain strings, not objects.
+  // Example: ["sdfiana012", "sdfiana013"]
+  //    NOT [{"node": "sdfiana012"}, {"node": "sdfiana013"}]
   "new_issues": [...],
   "ongoing_issues": [...],
   "resolved_issues": [...]
@@ -113,7 +118,9 @@ For the top 5 worst over-requesters suggest specific corrected values based on t
   "per_user_stats": [...],
   "top_wasters": [...],
   "recommendations": {"<user>": {"RequestMemory": <MB>, "RequestCpus": <n>}, ...},
-  "flagged_users": [...],
+  "flagged_users": ["<username>", ...],
+  // IMPORTANT:  this must be a flat list of plain strings, not objects.
+  // Example: ["alice", "bob"] NOT [{"user": "alice"}, {"user": "bob"}]
   "new_issues": [...],
   "ongoing_issues": [...],
   "resolved_issues": [...]
@@ -150,7 +157,10 @@ For each suspect node state whether it should be investigated, drained, or offli
   "suspect_nodes": [{"node": ..., "failure_rate_pct": ..., "recommendation": ...}, ...],
   "shadow_exception_clusters": [...],
   "exit_code_analysis": [...],
-  "flagged_nodes": [...],
+  "flagged_nodes": ["<nodename>", ...],
+  // IMPORTANT:  this must be a flat list of plain strings, not objects.
+  // Example: ["sdfiana012", "sdfiana013"]
+  //    NOT [{"node": "sdfiana012"}, {"node": "sdfiana013"}]
   "new_issues": [...],
   "ongoing_issues": [...],
   "resolved_issues": [...]
@@ -185,7 +195,9 @@ Flag for user notification or admin intervention where appropriate.
 {
   "executive_summary": "...",
   "long_running_jobs": [{"job_id": ..., "user": ..., "wall_hours": ..., "classification": ..., "action": ...}, ...],
-  "flagged_users": [...],
+  "flagged_users": ["<username>", ...],
+  // IMPORTANT:  this must be a flat list of plain strings, not objects.
+  // Example: ["alice", "bob"] NOT [{"user": "alice"}, {"user": "bob"}]
   "new_issues": [...],
   "ongoing_issues": [...],
   "resolved_issues": [...]
@@ -221,7 +233,9 @@ from the submission timing (e.g., jobs always spike on Mondays).
   "executive_summary": "...",
   "anomalous_users": [{"user": ..., "anomaly_type": ..., "current_value": ..., "baseline_value": ..., "severity": ...}, ...],
   "new_users": [...],
-  "flagged_users": [...],
+  "flagged_users": ["<username>", ...],
+  // IMPORTANT:  this must be a flat list of plain strings, not objects.
+  // Example: ["alice", "bob"] NOT [{"user": "alice"}, {"user": "bob"}]
   "new_issues": [...],
   "ongoing_issues": [...],
   "resolved_issues": [...]
@@ -256,7 +270,9 @@ whether they should use CPU-only slots instead.
   "executive_summary": "...",
   "gpu_waste_by_user": [{"user": ..., "wasted_gpu_hours": ..., "recommendation": ...}, ...],
   "node_gpu_occupancy": [...],
-  "flagged_users": [...],
+  "flagged_users": ["<username>", ...],
+  // IMPORTANT:  this must be a flat list of plain strings, not objects.
+  // Example: ["alice", "bob"] NOT [{"user": "alice"}, {"user": "bob"}]
   "new_issues": [...],
   "ongoing_issues": [...],
   "resolved_issues": [...]
@@ -284,6 +300,25 @@ Query the last 24 hours.
 For each outlier note: is this unusual for this specific user, or globally unusual?
 Has this pattern appeared in prior runs?
 
+## Query strategy — IMPORTANT
+Retrieve data for ALL users in a single aggregated query rather than
+issuing separate queries per user.  Use aggregate_by_user() or a single
+run_raw_query() with a "terms" aggregation bucketed by
+{{ cfg.field_user }}.keyword to get per-user statistics in one round trip.
+
+Do NOT loop over users and issue one query per user — with many users this
+produces hundreds of steps and will exhaust max_steps before completing.
+
+The correct pattern is:
+  1. One aggregation query → per-user stats for the whole fleet
+  2. One percentile/stats query → global distribution for outlier thresholds
+  3. Python logic to identify outliers from those two result sets
+  4. At most one follow-up query to fetch raw job details for flagged users
+
+The incorrect pattern is:
+  for user in all_users:
+      result = query_jobs(user=user, ...)   # DO NOT DO THIS
+
 ## Prior run context
 {{ prior }}
 
@@ -295,7 +330,9 @@ Has this pattern appeared in prior runs?
   "excessive_restarts": [...],
   "failure_clusters": [...],
   "queue_spikes": [...],
-  "flagged_users": [...],
+  "flagged_users": ["<username>", ...],
+  // IMPORTANT:  this must be a flat list of plain strings, not objects.
+  // Example: ["alice", "bob"] NOT [{"user": "alice"}, {"user": "bob"}]
   "new_issues": [...],
   "ongoing_issues": [...],
   "resolved_issues": [...]
