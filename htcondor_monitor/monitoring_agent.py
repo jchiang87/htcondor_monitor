@@ -53,9 +53,16 @@ class MonitoringAgent:
                 "No Anthropic API key found.  Set HTCONDOR_ANTHROPIC_API_KEY "
                 "or ANTHROPIC_API_KEY environment variable."
             )
+        api_base = settings.anthropic_base_url or os.environ.get("ANTHROPIC_BASE_URL")
+        if not api_base:
+            raise RuntimeError(
+                "No Anthropic base url found.  Set ANTHROPIC_BASE_URL in .env "
+                "or ANTHROPIC_BASE_URL environment variable."
+            )
         return OpenAIModel(
             model_id=settings.anthropic_model,
             api_key=api_key,
+            api_base=api_base,
         )
 
     def _build_agent(self) -> CodeAgent:
@@ -64,6 +71,7 @@ class MonitoringAgent:
             model=self._build_llm(),
             max_steps=settings.agent_max_steps,
             verbosity_level=settings.agent_verbosity,
+            additional_authorized_imports=["json", "calendar"],
         )
 
     @staticmethod
@@ -73,6 +81,10 @@ class MonitoringAgent:
         The agent is instructed to return JSON but may wrap it in prose or
         markdown fences.
         """
+        if isinstance(raw_output, dict):
+            # No parsing as dict needed, so just return the model output directly.
+            return raw_output
+
         # Try to find a JSON block inside ```json ... ``` fences
         fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_output, re.DOTALL)
         if fence_match:
