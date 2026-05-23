@@ -10,23 +10,55 @@ or a .env file at the project root.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
+import warnings
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _config_dir() -> Path:
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    return base / "htcondor_monitor"
+
+
+_ENV_FILE = _config_dir() / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="HTCONDOR_",
-        env_file=".env",
+        env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",
         case_sensitive=False,
     )
+    @model_validator(mode="after")
+    def warn_if_no_env_file(self) -> "Settings":
+        if not _ENV_FILE.exists():
+            warnings.warn(
+                f"{_ENV_FILE} not found — running with default settings.\n"
+                "To use custom settings, copy examples/.env.example to "
+                "~/.config/htcondor_monitor/.env and configure it before use.\n"
+                "Be sure to use `chmod 600 .env` to ensure that file is "
+                "owner-only readable",
+                stacklevel=2,
+            )
+        else:
+            mode = _ENV_FILE.stat().st_mode & 0o777
+            if mode & 0o077:  # any group or world bits set
+                warnings.warn(
+                    f"{_ENV_FILE} is readable by group or world (mode {oct(mode)}). "
+                    f"Run: chmod 600 {_ENV_FILE}",
+                    stacklevel=2,
+                )
+        return self
 
     # ── OpenSearch ──────────────────────────────────────────────────────────
-    opensearch_host: str = "https://localhost:9200"
+    opensearch_host: str = "https://localhost"
+    opensearch_port: int = 9200
     opensearch_index_prefix: str = "htcondor-jobs"
     opensearch_username: str | None = None
     opensearch_password: str | None = None
@@ -34,6 +66,7 @@ class Settings(BaseSettings):
     opensearch_timeout: int = 30
     # Maximum docs to retrieve per query (guards against huge scrolls)
     opensearch_max_results: int = 10_000
+    opensearch_use_keyword_suffix: bool = False
 
     # ── ClassAd field mapping ───────────────────────────────────────────────
     # Override these if your ingest pipeline uses different field names.
@@ -65,6 +98,7 @@ class Settings(BaseSettings):
     # ── LLM / smolagents ───────────────────────────────────────────────────
     anthropic_api_key: str | None = None   # falls back to ANTHROPIC_API_KEY env var
     anthropic_model: str = "claude-sonnet-4-20250514"
+    anthropic_base_url: str | None = None
     agent_max_steps: int = 20
     agent_verbosity: int = 1   # 0=quiet, 1=normal, 2=debug
 
