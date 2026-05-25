@@ -9,21 +9,35 @@ The agent queries your HTCondor ClassAd history stored in OpenSearch, reasons ov
 ## Architecture
 
 ```
-cron job
-  └─► cron/daily_health.py          (thin wrapper)
-        └─► MonitoringAgent.run()
-              ├─ PromptBuilder        renders Jinja2 template with live settings + prior context
-              ├─ StateStore           loads rolling window of prior run summaries
-              ├─ CodeAgent (smolagents)
-              │     ├─ query_jobs()            OpenSearch tools
-              │     ├─ aggregate_by_user()
-              │     ├─ aggregate_by_node()
-              │     ├─ get_hold_reason_summary()
-              │     ├─ get_schema_sample()
-              │     ├─ get_index_field_names()
-              │     └─ run_raw_query()
-              └─ Reporting            Rich terminal + JSON file + email
+cron/{daily,weekly,monthly}_*.py      (thin wrappers)
+  └─► MonitoringAgent.run(task, cadence)           monitoring_agent.py
+        │
+        ├─ Step 1: run_orchestrator(task)           orchestrators.py
+        │    ├─ opensearch_queries.py               raw OpenSearch DSL queries
+        │    │    └─ fetch_jobs / fetch_user_aggregations /
+        │    │       fetch_node_aggregations / fetch_hold_reasons /
+        │    │       fetch_fleet_percentiles
+        │    └─ metrics.py                          pure-Python threshold analysis
+        │         └─ returns FindingsContext dict
+        │
+        ├─ Step 2: PromptBuilder.build(findings)    builder.py
+        │    ├─ HYBRID_TEMPLATES[task] (Jinja2)
+        │    ├─ findings serialised as JSON
+        │    └─ StateStore.prior_context_block()    store.py
+        │
+        ├─ Step 3: CodeAgent.run(prompt)            smolagents
+        │    ├─ OpenAIModel("claude-sonnet-...")
+        │    └─ opensearch_tools.py                 @tool wrappers (agent fallback)
+        │         ├─ query_jobs / aggregate_by_user / aggregate_by_node
+        │         ├─ get_hold_reason_summary / get_schema_sample
+        │         ├─ get_index_field_names / run_raw_query
+        │         └─ get_fleet_percentiles
+        │
+        └─ Step 4: RunRecord → StateStore.save()    store.py
+              └─ print_report / save_json / email   report.py
 ```
+
+**Key design:** The orchestrator pre-computes all metrics via deterministic Python before the LLM is called. The agent's role is narrative synthesis, cross-signal reasoning, and NEW/ONGOING/RESOLVED classification — typically 2–5 steps. The smolagents tools are available as a fallback for direct investigation but are rarely needed in normal operation.
 
 ---
 
@@ -137,9 +151,10 @@ HTCONDOR_FIELD_WALL_TIME=wall_clock_seconds
 
 ### Add a custom task
 
-1. Add a new Jinja2 template string to `TEMPLATES` in `prompts/builder.py`.
-2. Optionally add a dedicated cron script in `cron/`.
-3. No other changes needed — the CLI picks up all keys in `TEMPLATES` automatically.
+1. Add a new Jinja2 template string to `HYBRID_TEMPLATES` in `builder.py`.
+2. Add a corresponding orchestrator function in `orchestrators.py` and register it in `ORCHESTRATORS`.
+3. Optionally add a dedicated cron script in `cron/`.
+4. No other changes needed — the CLI picks up all keys in `ORCHESTRATORS` automatically.
 
 ### Add a custom OpenSearch tool
 
