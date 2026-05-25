@@ -45,14 +45,15 @@ of job history.  You do not need to query OpenSearch.
 
 ## Your tasks
 1. Write a concise executive summary (2-3 sentences) highlighting the most important issues.
-2. For each section of findings, explain what the numbers mean in plain English —
+2. Include a summary of usage by the top users by wall time.
+3. For each section of findings, explain what the numbers mean in plain English —
    don't just restate them.
-3. Identify any cross-cutting patterns: e.g. the same user appearing in both
+4. Identify any cross-cutting patterns: e.g. the same user appearing in both
    low_cpu_efficiency and excessive_evictions, or a node appearing in both
    unhealthy_nodes and the hold_reason_summary.
-4. For each flagged item classify it as NEW, ONGOING, or RESOLVED based on
+5. For each flagged item classify it as NEW, ONGOING, or RESOLVED based on
    the prior run context.
-5. For unhealthy nodes, assess whether the evidence suggests hardware failure,
+6. For unhealthy nodes, assess whether the evidence suggests hardware failure,
    misconfiguration, or a transient problem.
 
 ## Output format
@@ -61,6 +62,7 @@ must be plain strings (usernames / hostnames only, no nested objects).
 Example of correct format: "flagged_users": ["alice", "bob"]
 {
   "executive_summary": "<2-3 sentences>",
+  "top_users": [{"<username>": {"wall_time": "<total_wall_time>", "job_count": "<job_count>"}}, ...],
   "held_or_removed": [...],
   "memory_exceeded": [...],
   "low_cpu_efficiency": [...],
@@ -89,17 +91,19 @@ You do not need to query OpenSearch.
 
 ## Your tasks
 1. Write an executive summary focusing on the biggest sources of resource waste.
-2. For the top wasters by CPU-hours and memory-GB-hours, explain likely causes
+2. To provide overall context, summarize the top users by wall time.
+3. For the top wasters by CPU-hours and memory-GB-hours, explain likely causes
    (e.g. short jobs with long wall time suggest I/O waiting; memory overrequest
    suggests conservative defaults that users haven't tuned).
-3. Generate specific RequestMemory and RequestCpus recommendations for the top 5
+4. Generate specific RequestMemory and RequestCpus recommendations for the top 5
    over-requesters, based on the suggested_request_mb values in memory_overrequested
    and the p90 CPU values in per_user_stats.
-4. Classify each flagged user as NEW, ONGOING, or RESOLVED vs prior runs.
+5. Classify each flagged user as NEW, ONGOING, or RESOLVED vs prior runs.
 
 ## Output format — flagged_users must be a flat list of plain strings.
 {
   "executive_summary": "...",
+  "top_users": [{"<username>": {"wall_time": "<total_wall_time>", "job_count": "<job_count>"}}, ...],
   "top_cpu_wasters": [...],
   "top_memory_wasters": [...],
   "recommendations": {"<user>": {"RequestMemory": <MB>, "RequestCpus": <n>}, ...},

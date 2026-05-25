@@ -22,6 +22,26 @@ logger = logging.getLogger(__name__)
 # Type alias for a finding dict
 Finding = dict[str, Any]
 
+# ── Top users  ─────────────────────────────────────────────────────────────────
+
+def find_top_users(user_stats: list[dict], num_users: int = 5) -> list[Finding]:
+    """
+    Find the top users in terms of total wall time consumed.
+    """
+    findings = []
+
+    def wall_time_used(row):
+        """
+        Negative of total wall time, so that high wall time users appear
+        first in the list
+        """
+        return -(row.get("avg_wall_time") or 0) * row["job_count"]
+
+    for row in sorted(user_stats, key=wall_time_used)[:num_users]:
+        findings.append({"user": row["user"], "job_count": row["job_count"],
+                         "total_wall_time": -wall_time_used(row)})
+    return findings
+
 
 # ── CPU efficiency ─────────────────────────────────────────────────────────────
 

@@ -82,6 +82,7 @@ def run_health_check(hours_back: int = 24) -> FindingsContext:
         "hours_back":          hours_back,
         "total_users":         len(user_stats),
         "total_nodes":         len(node_stats),
+        "top_users":           m.find_top_users(user_stats),
         "low_cpu_efficiency":  m.find_low_cpu_efficiency(user_stats),
         "memory_exceeded":     m.find_memory_exceeded(user_stats),
         "high_hold_rates":     m.find_high_hold_rates(user_stats),
