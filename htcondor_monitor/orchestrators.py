@@ -28,6 +28,18 @@ logger = logging.getLogger(__name__)
 FindingsContext = dict[str, Any]
 
 
+def _sample(jobs: list[dict], n: int) -> tuple[list[dict], int]:
+    """
+    Return a random sample of at most n jobs and the original total count.
+    The total is returned separately so the agent can report accurately
+    even though it only sees a subset.
+    """
+    total = len(jobs)
+    if total <= n:
+        return jobs, total
+    return random.sample(jobs, n), total
+
+
 class ContextTooLargeError(RuntimeError):
     """Raised when pre-computed findings would exceed the configured token budget."""
     def __init__(self, task_name: str, estimated_tokens: int, limit: int):
@@ -78,6 +90,7 @@ def run_health_check(hours_back: int = 24) -> FindingsContext:
     hold_reasons = q.fetch_hold_reasons(hours_back=hours_back)
 
     logger.info("health_check: computing metrics")
+    exit_codes, exit_code_count = _sample(m.classify_exit_codes(node_stats), 50)
     return {
         "hours_back":          hours_back,
         "total_users":         len(user_stats),
@@ -89,7 +102,8 @@ def run_health_check(hours_back: int = 24) -> FindingsContext:
         "excessive_evictions": m.find_excessive_evictions(user_stats),
         "unhealthy_nodes":     m.find_unhealthy_nodes(node_stats),
         "hold_reason_summary": hold_reasons,
-        "exit_code_analysis":  m.classify_exit_codes(node_stats),
+        "exit_code_analysis":  {"exit_code_sample": exit_codes,
+                                "total_exit_code_count": exit_code_count},
         "thresholds": {
             "cpu_efficiency_warn_pct":  settings.cpu_efficiency_warn_pct,
             "memory_exceeded_pct":      settings.memory_exceeded_pct,
@@ -418,18 +432,6 @@ def classify_long_running_jobs(jobs: list[dict]) -> dict[str, list]:
         buckets["needs_review"].append(slim)
 
     return buckets
-
-
-def _sample(jobs: list[dict], n: int) -> tuple[list[dict], int]:
-    """
-    Return a random sample of at most n jobs and the original total count.
-    The total is returned separately so the agent can report accurately
-    even though it only sees a subset.
-    """
-    total = len(jobs)
-    if total <= n:
-        return jobs, total
-    return random.sample(jobs, n), total
 
 
 def run_long_running_jobs(hours_back: int = 168) -> FindingsContext:
