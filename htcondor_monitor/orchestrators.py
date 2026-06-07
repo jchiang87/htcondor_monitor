@@ -153,13 +153,14 @@ def run_node_health(hours_back: int = 168) -> FindingsContext:
     hold_reasons = q.fetch_hold_reasons(hours_back=hours_back)
 
     unhealthy = m.find_unhealthy_nodes(node_stats)
-    exit_analysis = m.classify_exit_codes(node_stats)
+    exit_codes, exit_code_count = _sample(m.classify_exit_codes(node_stats), 50)
 
     return {
         "hours_back":            hours_back,
         "total_nodes":           len(node_stats),
         "unhealthy_nodes":       unhealthy,
-        "exit_code_analysis":    exit_analysis,
+        "exit_code_analysis":  {"exit_code_sample": exit_codes,
+                                "total_exit_code_count": exit_code_count},
         "hold_reason_summary":   hold_reasons,
         "all_node_stats":        node_stats[:50],  # top 50 by failure rate
         "thresholds": {
