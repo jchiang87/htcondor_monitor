@@ -12,7 +12,6 @@ pre-computed context rather than having the agent run the queries itself.
 from __future__ import annotations
 
 import logging
-import statistics
 from typing import Any
 
 from ..settings import settings
@@ -23,6 +22,7 @@ logger = logging.getLogger(__name__)
 Finding = dict[str, Any]
 
 # ── Top users  ─────────────────────────────────────────────────────────────────
+
 
 def find_top_users(user_stats: list[dict], num_users: int = 5) -> list[Finding]:
     """
@@ -291,7 +291,7 @@ def find_anomalous_users(
                 "metric":           "hold_rate",
                 "current_pct":      round(curr_hold_rate, 1),
                 "prior_pct":        round(prior_hold_rate, 1),
-                "description":      f"Hold rate doubled vs prior period",
+                "description":      "Hold rate doubled vs prior period",
             })
 
         if anomalies:
@@ -311,6 +311,23 @@ def find_new_users(
         for row in current_stats
         if row["user"] not in prior_users
     ]
+
+
+def _is_meaningful_outlier(
+        value: float,
+        p99: float | None,
+        min_p99: float,
+        ratio: float = 2.0
+) -> bool:
+    """
+    Return True only if p99 itself indicates the metric has meaningful spread
+    and the value substantially exceeds even that elevated baseline.
+    """
+    return (
+        p99 is not None
+        and p99 > min_p99
+        and value > p99 * ratio
+    )
 
 
 def find_fleet_outliers(
@@ -335,8 +352,15 @@ def find_fleet_outliers(
                 flags.append(f"avg memory {row['avg_memory_usage_kb']:.0f}KB > p99 {p99_memory:.0f}KB")
         except TypeError:
             pass
-        if p99_starts and row.get("total_job_starts", 0) / max(row["job_count"], 1) > p99_starts:
-            flags.append(f"avg job starts per job > p99 fleet baseline")
+        if _is_meaningful_outlier(
+                row.get("total_job_starts", 0) / max(row["job_count"], 1),
+                p99_starts,
+                min_p99=2.0,
+        ):
+            flags.append(
+                f"avg job starts per job {row['total_job_starts']/row['job_count']:.1f} "
+                f"is more than 2x the p99 fleet baseline of {p99_starts:.1f}"
+            )
         if flags:
             findings.append({"user": row["user"], "job_count": row["job_count"], "flags": flags})
     return findings
